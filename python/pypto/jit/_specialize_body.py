@@ -1050,6 +1050,15 @@ class BodyTransformer(ast.NodeTransformer):
             assignment.value = value
         return self._visit_scoped_body(selected)
 
+    def visit_IfExp(self, node: ast.IfExp) -> ast.expr:
+        node.test = self.visit(node.test)
+        condition = _constant_condition(node.test)
+        if condition is not None:
+            return self.visit(node.body if condition else node.orelse)
+        node.body = self.visit(node.body)
+        node.orelse = self.visit(node.orelse)
+        return node
+
     def visit_If(self, node: ast.If) -> ast.stmt | list[ast.stmt]:
         """Visit If; treat the two branches as mutually-exclusive sibling scopes.
 

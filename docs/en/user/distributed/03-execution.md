@@ -42,6 +42,7 @@ directly via `DistributedWorker(compiled)`, importable from
 | `rt.copy_to(dst_dev_ptr, src_host_ptr, nbytes, *, dst_offset=0, src_offset=0, worker_id=0)` | Explicit staged H2D copy. `dst_offset` and `src_offset` address sub-ranges: copy from `src_host_ptr + src_offset` into `dst_dev_ptr + dst_offset`. `dst_offset + nbytes` must fit the device allocation. A host `torch.Tensor` source only needs to be CPU-contiguous and may be created after `prepare()`. |
 | `rt.copy_from(dst_host_ptr, src_dev_ptr, nbytes, *, dst_offset=0, src_offset=0, worker_id=0)` | Explicit staged D2H copy. `dst_offset` and `src_offset` address sub-ranges: copy from `src_dev_ptr + src_offset` into `dst_host_ptr + dst_offset`. `src_offset + nbytes` must fit the device allocation. A host `torch.Tensor` destination only needs to be CPU-contiguous and may be created after `prepare()`. |
 | `rt.alloc_stacked_tensor(host_w)` | Shard host_w along dim 0 — shard `i` uploaded to card `i`. Returns `StackedDeviceTensor`. |
+| `rt.mapped_host_tensor(name, shape, dtype, initialize)` | Open one mapped Host window per rank on A2/A3 or A5 with `tensormap_and_ringbuffer`. The context yields a `StackedDeviceTensor`. |
 | `rt.free_stacked_tensor(stacked)` | Release all shards of a `StackedDeviceTensor`. |
 | `rt.copy_stacked_from(stacked, host_out)` | Staged D2H read-back of every shard into a CPU-contiguous `host_out`; it may be allocated after `prepare()`. |
 | `rt.committed_device_memory(worker_id=0)` | Device HBM (bytes) this worker's own allocator has committed on card `worker_id` — tensors, pooled arenas, runtime buffers. Sum across ids for a multi-chip total. |
@@ -102,13 +103,17 @@ synchronous and returns an already-completed handle.
 
 ### Resident Tensor Ownership
 
-Resident arguments are supported only on a prepared worker. A `DeviceTensor`
-must be returned by that same `DistributedWorker`'s `alloc_tensor`, and a
-`StackedDeviceTensor` must be returned by its `alloc_stacked_tensor`. These
+Resident arguments belong to the prepared worker that created them with
+`alloc_tensor`, `alloc_stacked_tensor`, or `mapped_host_tensor`. These
 allocation APIs retain the Simpler owner `Buffer` on every device tensor or
 shard so the address-free wire ABI can derive a valid Tensor descriptor.
 Manually wrapping a raw pointer, or reusing a resident tensor with another
 worker, is rejected.
+
+For a mapped Host tensor, `shape` describes one shard. During setup,
+`initialize(rank, view)` fills that rank's bytes through a borrowed CPU
+memoryview. Its device can read them across successive dispatches. Complete
+every consumer inside the context, before it releases the Host mappings.
 
 ## DeviceTensor
 

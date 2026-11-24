@@ -232,6 +232,8 @@ compiled(A[:TILE_ROWS], B[:TILE_ROWS], scratch, out, config=CFG)
 torch.testing.assert_close(out, torch.exp(A[:TILE_ROWS] + B[:TILE_ROWS]), rtol=1e-3, atol=1e-4)
 ```
 
+Use `CompileOptions(disable_early_resolve=True)` to wait for producer completion for every task in one compilation, including child chip orchestrations. It overrides explicit early-dispatch hints and selects a separate JIT cache entry.
+
 The scheduler may then pre-stage that task's consumers onto idle cores *before* it
 completes, releasing them with a doorbell the instant it finishes.
 

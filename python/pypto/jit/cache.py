@@ -143,6 +143,7 @@ def make_cache_key(  # noqa: PLR0913 — args are the key's components, one per 
     runtime: RuntimeKind = RuntimeKind.TENSORMAP_AND_RINGBUFFER,
     enable_buffer_ir: bool = True,
     enable_software_pipeline: bool = False,
+    disable_early_resolve: bool = False,
 ) -> CacheKey:
     """Build a cache key for a JIT call site.
 
@@ -209,6 +210,7 @@ def make_cache_key(  # noqa: PLR0913 — args are the key's components, one per 
         enable_buffer_ir: Whole-kernel Buffer IR selection from the active
             ``PassContext``. It changes storage legalization and separates
             artifacts from explicit Off mode under every memory planner.
+        disable_early_resolve: Select an orchestration that waits for producer completion.
         enable_software_pipeline: Effective software pipeline opt-in. Separates
             rotating-slot kernels from kernels produced by unroll lowering.
 
@@ -252,6 +254,8 @@ def make_cache_key(  # noqa: PLR0913 — args are the key's components, one per 
         ("gather_compare_scratch_version", 2),
         ("enable_software_pipeline", enable_software_pipeline),
     )
+    if disable_early_resolve:
+        compile_opts += (("disable_early_resolve", True),)
     return CacheKey(
         source_hash,
         platform,

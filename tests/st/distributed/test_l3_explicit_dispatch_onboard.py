@@ -118,6 +118,28 @@ def _no_leak_warning(caplog):
     assert not leaks, f"close() emitted owned-tensor leak warnings: {[r.getMessage() for r in leaks]}"
 
 
+@pytest.mark.platforms("a2a3", "a5")
+def test_mapped_host_input_across_dispatches(test_config, device_ids):
+    compiled = ir.compile(
+        L3AddProgram,
+        platform=test_config.platform,
+        distributed_config=DistributedConfig(device_ids=device_ids[:1], num_sub_workers=1),
+    )
+    a = torch.ones(M, M, dtype=torch.float32).share_memory_()
+    out = torch.empty_like(a).share_memory_()
+    weights = torch.arange(M * M, dtype=torch.float32).reshape(M, M)
+
+    def initialize(rank: int, view: memoryview) -> None:
+        assert rank == 0
+        torch.frombuffer(view, dtype=torch.float32).reshape(M, M).copy_(weights)
+
+    with compiled.prepare() as worker:
+        with worker.mapped_host_tensor("weights", (M, M), torch.float32, initialize) as mapped:
+            for _ in range(2):
+                worker.run(compiled, a, mapped.shards[0], out)
+                torch.testing.assert_close(out, a + weights)
+
+
 def test_l3_explicit_dispatch_single_chip(test_config, device_ids, _no_leak_warning):
     """prepare → register → handle/run dispatch; close auto-frees; reuse-after-close raises."""
     if not device_ids:

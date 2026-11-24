@@ -228,6 +228,8 @@ class SpecializeContext:
     # An incoming Submit needs explicit result arity before its body is lowered.
     requires_return_contract: bool = False
     return_metas: tuple[TensorMeta | None, ...] | None = None
+    inout_params: tuple[str, ...] = ()
+    param_annotations: Mapping[str, Any] = field(default_factory=dict[str, Any])
 
     # Internal provider hand-off after preparation/validation. Legacy externs
     # derive the equivalent result plan from their validated declaration.
@@ -1980,8 +1982,47 @@ def _materialize_implicit_entry_output(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_tensor_parameter_annotations(
+    definition: ast.FunctionDef, annotations: Mapping[str, Any], namespace: Mapping[str, Any]
+) -> ast.FunctionDef:
+    """Expand bound tensor parameter aliases without editing the shared source AST."""
+    args = definition.args.args
+    resolved = list(args)
+    for index, param in enumerate(args):
+        annotation = param.annotation
+        if annotation is None:
+            continue
+        wrapper = None
+        if isinstance(annotation, ast.Subscript) and _ast_to_str(annotation.value).split(".")[-1] in {
+            "Out",
+            "InOut",
+        }:
+            wrapper, annotation = annotation, annotation.slice
+        if isinstance(annotation, ast.Name) and not _is_tensor_annotation(annotation):
+            value = annotations.get(param.arg)
+            if value is None or isinstance(value, str):
+                value = namespace.get(annotation.id)
+            if isinstance(value, _LangTensor) and (source := _extern_annotation_source(value)) is not None:
+                annotation = ast.copy_location(ast.parse(source, mode="eval").body, annotation)
+        if wrapper is not None:
+            if annotation is not wrapper.slice:
+                wrapper = copy.copy(wrapper)
+                wrapper.slice = annotation
+            annotation = wrapper
+        if annotation is not param.annotation:
+            resolved[index] = copy.copy(param)
+            resolved[index].annotation = annotation
+    if all(old is new for old, new in zip(args, resolved, strict=True)):
+        return definition
+    output = copy.copy(definition)
+    output.args = copy.copy(definition.args)
+    output.args.args = resolved
+    return output
+
+
 def _classify_params(
     func_def: ast.FunctionDef,
+    inout_overrides: tuple[str, ...] = (),
 ) -> tuple[list[str], list[str], list[str], dict[str, str], set[str]]:
     """Classify function parameters.
 
@@ -2039,6 +2080,8 @@ def _classify_params(
         # Detect pl.Tensor / pld.DistributedTensor (bare or subscripted)
         if _is_tensor_annotation(ann):
             tensor_params.append(name)
+            if name in inout_overrides:
+                inout_params.append(name)
             if _is_distributed_tensor_annotation(ann):
                 distributed_params.add(name)
             continue
@@ -2424,9 +2467,10 @@ class Specializer:
         func_def = _find_func_def(tree, ctx.source_def_name)
         assert func_def is not None, f"specialize: no def named {ctx.source_def_name!r} in its own source"
 
+        func_def = _resolve_tensor_parameter_annotations(func_def, ctx.param_annotations, ctx.py_globals)
         # Classify parameters
         out_params, inout_params, tensor_params, scalar_dtype_strs, distributed_params = _classify_params(
-            func_def
+            func_def, ctx.inout_params
         )
 
         # Inline helpers share the caller's tensor storage, so writes do not
@@ -3082,6 +3126,7 @@ def build_specialize_context(  # noqa: PLR0913 — pass-through assembler; each 
     scalar_dtypes: dict[str, DataType],
     dep_names: list[str],
     auto_scope: bool = True,
+    inout_params: tuple[str, ...] = (),
     external_core_type: str | None = None,
     external_aic_source: str | None = None,
     external_aiv_source: str | None = None,
@@ -3175,10 +3220,12 @@ def build_specialize_context(  # noqa: PLR0913 — pass-through assembler; each 
         peer_func_names=peer_func_names or {},
         peer_func_scope_ambiguous=peer_func_scope_ambiguous,
         auto_scope=auto_scope,
+        inout_params=inout_params,
         py_globals=func_name_lookup(func),
         eager_tile_annotations=eager_data,
         annotation_dynvars=dict(eager_data.dynvars),
         eager_return_annotation=signature.return_annotation,
+        param_annotations={name: param.annotation for name, param in signature.parameters.items()},
         requires_return_contract=requires_return_contract,
         return_metas=return_metas,
         orig_file=orig_file,

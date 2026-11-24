@@ -19,11 +19,14 @@ import textwrap
 from typing import Any
 
 from ._call_syntax import dependency_call
+from ._source import cache_in_snapshot
 from ._specialize_values import math_constant_reference
 from .specializer import (
     DynDim,
     _collect_annotation_dynamic_dims,
     _collect_dynvar_names,
+    _resolve_tensor_parameter_annotations,
+    func_name_lookup,
 )
 
 # ---------------------------------------------------------------------------
@@ -32,7 +35,7 @@ from .specializer import (
 
 
 @functools.lru_cache(maxsize=512)
-def get_func_def(func: Any) -> ast.FunctionDef:
+def _source_func_def(func: Any) -> ast.FunctionDef:
     """Parse func source and return its FunctionDef node.
 
     Memoised on ``func`` identity: ``inspect.getsource`` + ``ast.parse`` are
@@ -65,6 +68,14 @@ def get_func_def(func: Any) -> ast.FunctionDef:
             "in its own source file. This may happen with heavily wrapped functions."
         )
     return func_def
+
+
+@cache_in_snapshot
+def get_func_def(func: Any) -> ast.FunctionDef:
+    """Expand bound tensor aliases in this request's namespace snapshot."""
+    return _resolve_tensor_parameter_annotations(
+        _source_func_def(func), func.__annotations__, func_name_lookup(func)
+    )
 
 
 @functools.lru_cache(maxsize=512)
@@ -184,7 +195,7 @@ def body_local_names(func: Any) -> set[str]:
     rule through ``BodyTransformer._used_names``; keeping one definition here
     is what stops a folded value and the emitted source from disagreeing.
     """
-    definition = get_func_def(func)
+    definition = _source_func_def(func)
     local_names = {arg.arg for arg in ast.walk(definition.args) if isinstance(arg, ast.arg)}
     local_names.update(
         node.id
@@ -201,7 +212,7 @@ def constant_dependency_names(func: Any) -> tuple[str, ...]:
     names resolve in the defining namespace independently of body locals.
     Decorators and defaults are already evaluated when the function is defined.
     """
-    definition = get_func_def(func)
+    definition = _source_func_def(func)
     local_names = body_local_names(func)
     names = {
         node.id

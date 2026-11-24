@@ -89,7 +89,8 @@ class OrchestrationStmtCodegen : public CodegenBase {
                                     std::unordered_map<const ir::Var*, std::string> param_to_emit_name,
                                     std::set<std::string> param_name_set,
                                     std::map<std::string, int> param_name_to_orch_index,
-                                    std::unordered_map<std::string, std::string> dist_param_to_ctx_param);
+                                    std::unordered_map<std::string, std::string> dist_param_to_ctx_param,
+                                    bool disable_early_resolve);
 
   void SetCallTupleElements(const std::map<std::string, std::vector<TupleElement>>& elements);
 
@@ -568,6 +569,7 @@ class OrchestrationStmtCodegen : public CodegenBase {
   void RegisterArrayCarry(const ir::Var* var, const std::string& array_name, int64_t size);
 
   const ir::ProgramPtr& program_;
+  bool disable_early_resolve_;
   bool require_task_completion_{false};
   KernelRegistrations* registrations_;
   std::unordered_map<const ir::Var*, std::string> emit_name_map_;

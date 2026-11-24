@@ -48,6 +48,13 @@ program_inlined = inline_pass(program)
      - Wire up the callee's trailing return value according to the call-site form: `LHS = renamed_return` (single-return assign; omitted when `LHS` resolves to the same `Var` as the substituted value, to avoid a redundant SSA copy), per-element `TupleGetItemExpr` substitution instead of a `MakeTuple` binding (multi-return assign), a fresh `ReturnStmt` (`return inline_call(...)`), or a fresh `EvalStmt` when the value is discarded but its evaluation is observable (`EvalStmt` call site — see [Edge cases](#edge-cases)).
 4. **Drop** all Inline functions from the program.
 
+Non-variable `TaskId` arguments, including `None` (the no-producer sentinel),
+are also bound to fresh local variables before substitution. Dependency
+fields and scope attributes store variable references, so substituting the
+`system.task_invalid()` expression directly would leave a stale formal
+parameter. This binding creates no task; code generation skips invalid
+tokens when building the dependency list.
+
 Tuple-element substitution applies the same identity-writeback rule as single
 returns: if `q, ready = helper(x, q)` produces `q = q`, the assignment is omitted
 before SSA conversion. This requires the exact same `Var` on both sides, not

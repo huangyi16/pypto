@@ -852,6 +852,64 @@ class TestArenaPrewarm:
 
 
 class TestPerCallValidation:
+    @pytest.fixture
+    def mapped_host_setup(self, patched_setup, monkeypatch):
+        monkeypatch.setattr(
+            sys.modules["simpler.buffer"], "AddressSpace", SimpleNamespace(HOST=1), raising=False
+        )
+        monkeypatch.setattr(
+            sys.modules["simpler.task_interface"], "CommBufferSpec", lambda *args: args, raising=False
+        )
+        compiled = _fake_compiled([_param("a", [4])], [])
+        rt = DistributedWorker(compiled)
+        buffer = _FakeBuffer(0x1000, 64)
+        host_bytes = bytearray(64)
+        monkeypatch.setattr(buffer, "shm", SimpleNamespace(buf=memoryview(host_bytes)), raising=False)
+        domain = MagicMock()
+        domain.__getitem__.return_value.buffers = {"data": buffer}
+
+        def allocate_domain(**options):
+            options["initializer"](domain)
+            return domain
+
+        orchestrator = SimpleNamespace(allocate_domain=allocate_domain)
+        patched_setup["worker"].run.side_effect = lambda fn: fn(orchestrator, None, None)
+
+        try:
+            yield rt, domain, host_bytes
+        finally:
+            rt.close()
+
+    def test_mapped_host_shards_are_dispatchable_only_inside_the_scope(self, mapped_host_setup):
+        rt, domain, host_bytes = mapped_host_setup
+
+        def initialize(rank, view):
+            view[:] = bytes([rank + 1]) * len(view)
+
+        with rt.mapped_host_tensor("table", (4,), torch.float32, initialize) as mapped:
+            assert host_bytes[:16] == bytes([1]) * 16
+            rt(mapped.shards[0])
+        domain.release.assert_called_once()
+        with pytest.raises(ValueError, match="not a live allocation"):
+            rt(mapped.shards[0])
+
+    def test_mapped_host_scope_releases_the_initializer(self, mapped_host_setup):
+        rt, domain, host_bytes = mapped_host_setup
+
+        class Source:
+            def initialize(self, rank, view):
+                view[:] = bytes([rank + 7]) * len(view)
+
+        source = Source()
+        source_ref = weakref.ref(source)
+        with rt.mapped_host_tensor("table", (4,), torch.float32, source.initialize) as mapped:
+            del source
+            assert source_ref() is None
+            assert host_bytes[:16] == bytes([7]) * 16
+            domain.release.assert_not_called()
+            rt(mapped.shards[0])
+        domain.release.assert_called_once()
+
     def test_accepts_device_tensor_allocated_by_same_worker(self, patched_setup):
         submitted_tensors: dict[str, Any] = {}
 

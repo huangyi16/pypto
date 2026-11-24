@@ -311,7 +311,7 @@ std::string GenerateDynamicDimDefs(const std::vector<VarPtr>& params, const std:
 /// to an integer would freeze the recording invocation's value on every replay.
 std::string GenerateGraphFunctions(const ProgramPtr& program, const FunctionPtr& entry,
                                    KernelRegistrations* registrations,
-                                   GraphConfigScalarSlots* static_scalar_slots) {
+                                   GraphConfigScalarSlots* static_scalar_slots, bool disable_early_resolve) {
   std::ostringstream oss;
   const auto graph_functions = CollectReferencedGraphFunctions(program, entry);
   if (graph_functions.empty()) return "";
@@ -373,7 +373,7 @@ static std::vector<uint64_t> pypto_graph_boundary_layout(const GraphTaskArgs& ar
     }
     OrchestrationStmtCodegen body_codegen(program, registrations, graph_func->params_, emit_name_map,
                                           /*param_name_set=*/{}, /*param_name_to_orch_index=*/{},
-                                          /*dist_param_to_ctx_param=*/{});
+                                          /*dist_param_to_ctx_param=*/{}, disable_early_resolve);
     body_codegen.SetTaskVarPrefix("g" + std::to_string(graph_index) + "_");
     body_codegen.SetGraphScalarParams(graph_func->params_);
     // The prologue below declares one C++ name per parameter. They are not in
@@ -450,7 +450,8 @@ static std::vector<uint64_t> pypto_graph_boundary_layout(const GraphTaskArgs& ar
   return oss.str();
 }
 
-OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const ir::FunctionPtr& func) {
+OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const ir::FunctionPtr& func,
+                                          bool disable_early_resolve) {
   CHECK(program != nullptr) << "Cannot generate orchestration for null program";
   CHECK(func != nullptr) << "Cannot generate orchestration for null function";
   VerifyOrchestrationCodegenPreconditions(program, func);
@@ -530,7 +531,7 @@ OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const i
 
   OrchestrationStmtCodegen stmt_codegen(program, &registrations, func->params_, std::move(emit_name_map),
                                         std::move(param_name_set), std::move(param_name_to_orch_index),
-                                        std::move(dist_param_to_ctx_param));
+                                        std::move(dist_param_to_ctx_param), disable_early_resolve);
   // Reserve every external reference before allocating NZ temporaries, even
   // those for parameters later in the signature. Reserve the temporaries before
   // visiting the body too, so body variables share the same naming discipline.
@@ -561,8 +562,8 @@ OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const i
   // Generate Graph bodies first: their actual value reads determine which
   // boundary slots the entry must declare static for safe replay.
   GraphConfigScalarSlots graph_config_scalar_slots;
-  const std::string graph_functions =
-      GenerateGraphFunctions(program, func, &registrations, &graph_config_scalar_slots);
+  const std::string graph_functions = GenerateGraphFunctions(
+      program, func, &registrations, &graph_config_scalar_slots, disable_early_resolve);
   stmt_codegen.SetGraphConfigScalarSlots(std::move(graph_config_scalar_slots));
   stmt_codegen.VisitStmt(func->body_);
 

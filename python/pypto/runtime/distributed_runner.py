@@ -23,9 +23,9 @@ import time
 import types
 import warnings
 import weakref
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, BinaryIO, cast
@@ -2971,6 +2971,66 @@ class DistributedWorker(Worker):
         # Explicit copies stage through a simpler-owned POSIX-shm Buffer.
         self._require_copy_host_tensor(init, "DistributedWorker.alloc_tensor(init=...)")
         return init
+
+    @contextmanager
+    def mapped_host_tensor(
+        self,
+        name: str,
+        shape: Sequence[int],
+        dtype: torch.dtype,
+        initialize: Callable[[int, memoryview], None],
+    ) -> Iterator[StackedDeviceTensor]:
+        """Allocate one rank-local Host window per chip and return its mapped tensor.
+
+        `shape` describes one rank. At setup, initialize(rank, view) fills that
+        rank's bytes on the CPU. The memoryview is borrowed for that call.
+        Complete all consumers before leaving the scope, which releases the mappings.
+        """
+        from simpler.buffer import AddressSpace  # noqa: PLC0415
+        from simpler.task_interface import CommBufferSpec  # noqa: PLC0415
+
+        self._require_open("mapped_host_tensor")
+        shape = tuple(shape)
+        if not shape or any(size <= 0 for size in shape):
+            raise ValueError("mapped Host tensor requires a nonempty, positive shape")
+        nbytes = math.prod(shape) * dtype.itemsize
+        aligned = (nbytes + 63) // 64 * 64
+        ranks = tuple(range(len(self.dc.device_ids)))
+        shards: list[DeviceTensor] = []
+        handle: Any = None
+
+        def fill(domain: Any) -> None:
+            nonlocal initialize
+            for rank in ranks:
+                buffer = domain[rank].buffers["data"]
+                with buffer.shm.buf[:nbytes] as view:
+                    initialize(rank, view)
+                shards.append(DeviceTensor(int(buffer.base), shape, dtype, buffer=buffer))
+
+        def allocate(orch: Any, _args: Any, _config: Any) -> None:
+            nonlocal handle
+            handle = orch.allocate_domain(
+                name=name,
+                members=ranks,
+                window_size=aligned,
+                buffers=[CommBufferSpec("data", "uint8", nbytes, aligned)],
+                memory_source=AddressSpace.HOST,
+                retain_after_run=True,
+                initializer=fill,
+            )
+
+        try:
+            self._w.run(allocate)
+            # The initializer may own the full host weight source; initialization is synchronous.
+            del initialize
+            for rank, shard in zip(ranks, shards, strict=True):
+                self._device_buffers[rank, shard.data_ptr] = shard.buffer
+            yield StackedDeviceTensor(shards, (len(ranks), *shape), ranks)
+        finally:
+            for rank, shard in enumerate(shards):
+                self._device_buffers.pop((rank, shard.data_ptr), None)
+            if handle is not None:
+                handle.release()
 
     def alloc_stacked_tensor(
         self,

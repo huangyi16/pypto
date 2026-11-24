@@ -1140,7 +1140,9 @@ class InlineCallsMutator : public IRMutator {
     //          it at every use, inside the callee's `pl.spmd` / `pl.pipeline` /
     //          `pl.at` bodies, moving the view from the call site into the
     //          outlined kernel.
-    //      Read-only scalar and constant args stay substituted, so shape
+    //        * A non-variable TaskId, including `None`'s task_invalid Call.
+    //          Dependency fields and scope attrs require Var references.
+    //      Read-only numeric scalar and constant args stay substituted, so shape
     //      expressions that read a param keep folding to the caller's value.
     //    - Dynamic dimensions in parameter types → actual argument dimensions,
     //      using the same binding rules as cross-function return-type deduction.
@@ -1166,12 +1168,15 @@ class InlineCallsMutator : public IRMutator {
       // convention is separate: a bare array alias is not codegen-declarable.
       const ParamDirection direction = callee->param_directions_[i];
       const TypePtr param_type = param->GetType();
-      const bool scalar_value_rebind = As<ScalarType>(param_type) && direction != ParamDirection::Out &&
-                                       direction != ParamDirection::InOut;
+      const auto scalar_type = As<ScalarType>(param_type);
+      const bool computed_task_id =
+          scalar_type && scalar_type->dtype_ == DataType::TASK_ID && !AsVarLike(actual);
+      const bool scalar_value_rebind =
+          scalar_type && direction != ParamDirection::Out && direction != ParamDirection::InOut;
       const bool shaped_value_rebind = (AsTensorTypeLike(param_type) || As<TileType>(param_type)) &&
                                        bindings.local_bindings.count(param.get()) > 0;
       const bool pass_by_value_rebind = scalar_value_rebind || shaped_value_rebind;
-      if ((rebound && (!assignable || pass_by_value_rebind)) || computed_shaped) {
+      if ((rebound && (!assignable || pass_by_value_rebind)) || computed_shaped || computed_task_id) {
         INTERNAL_CHECK_SPAN(actual_type, actual->span_)
             << "Internal error: argument bound at the call site for inline parameter '" << param->name_hint_
             << "' of '" << callee->name_ << "' has no type";

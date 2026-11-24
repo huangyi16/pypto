@@ -92,6 +92,7 @@ void BindCodegen(nb::module_& m) {
 
   // Free functions for orchestration codegen (backend-agnostic)
   codegen_module.def("generate_orchestration", &GenerateOrchestration, nb::arg("program"), nb::arg("func"),
+                     nb::arg("disable_early_resolve") = false,
                      "Generate C++ orchestration code for a function.\n\n"
                      "Uses simpler runtime API (rt_submit_task, make_tensor_external, etc.).\n"
                      "This is backend-agnostic.\n\n"

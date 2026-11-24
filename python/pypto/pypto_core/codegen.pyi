@@ -178,7 +178,9 @@ class DistributedCodegen:
         """Return builtin ``next_levels`` variants referenced by the generated host orchestration."""
         ...
 
-def generate_orchestration(program: Program, func: Function) -> OrchestrationResult:
+def generate_orchestration(
+    program: Program, func: Function, disable_early_resolve: bool = False
+) -> OrchestrationResult:
     """Generate C++ orchestration code for a function.
 
     Uses simpler runtime API. This is backend-agnostic.
@@ -186,6 +188,7 @@ def generate_orchestration(program: Program, func: Function) -> OrchestrationRes
     Args:
         program: The IR Program containing all functions
         func: The orchestration function to generate code for
+        disable_early_resolve: Require producer completion across the generated orchestration
 
     Returns:
         OrchestrationResult with generated code and function metadata

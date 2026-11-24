@@ -357,6 +357,8 @@ class RunConfig:
             ``PassContext``, or to ``PYPTO`` when none is active.
             Forwarded to ``ir.compile()``, which rejects it when a
             ``PassContext`` is already active — set it on that context instead.
+        disable_early_resolve: Wait for producer completion before dispatching consumers,
+            including when a task explicitly requests early dispatch.
         enable_software_pipeline: Use explicit prefetch and rotating slots for
             eligible pipeline loops. ``None`` inherits the active ``PassContext``
             or defaults to ``False``. Requires ``PYPTO`` memory planning. Set it
@@ -402,6 +404,7 @@ class RunConfig:
     memory_planner: MemoryPlanner | None = None
     dump_ptoas_passes: bool = False
     enable_software_pipeline: bool | None = None
+    disable_early_resolve: bool = False
 
     if TYPE_CHECKING:
         # The runtime ``__init__`` wrapper installed at the bottom of this
@@ -450,6 +453,7 @@ class RunConfig:
             memory_planner: MemoryPlanner | None = ...,
             dump_ptoas_passes: bool = ...,
             enable_software_pipeline: bool | None = ...,
+            disable_early_resolve: bool = ...,
         ) -> None: ...
 
     def __post_init__(self) -> None:
@@ -606,6 +610,7 @@ class RunConfig:
             output_dir=self.save_kernels_dir,
             memory_planner=self.memory_planner,
             enable_software_pipeline=self.enable_software_pipeline,
+            disable_early_resolve=self.disable_early_resolve,
             distributed_config=self.distributed_config,
         )
 
@@ -924,6 +929,7 @@ class CompileOptions:
     memory_planner: MemoryPlanner | None = None
     distributed_config: "DistributedConfig | None" = None
     enable_software_pipeline: bool | None = None
+    disable_early_resolve: bool = False
 
     def __post_init__(self) -> None:
         if type(self.execution_mode) is not ExecutionMode:
@@ -950,6 +956,8 @@ class CompileOptions:
             "disabled_diagnostics": self.disabled_diagnostics,
             "analyze_auto_scopes_for_deps": self.analyze_auto_scopes_for_deps,
         }
+        if self.disable_early_resolve:
+            kwargs["disable_early_resolve"] = True
         for name in ("output_dir", "memory_planner", "distributed_config", "enable_software_pipeline"):
             value = getattr(self, name)
             if value is not None:

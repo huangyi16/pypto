@@ -96,6 +96,8 @@ torch.testing.assert_close(acc, acc_before + scaled, rtol=1e-2, atol=1e-2)  # In
 元素没有定义。如果 kernel 只更新部分输出，并要求保留其余 host 数据，应将
 该参数声明为 `InOut`，外层入口和被调用函数也应保持这一契约。
 
+JIT 装饰器可为特定内核变体按名称指定可读写的张量参数。例如，`@pl.jit(inout_params=("bank",))` 将 `bank: pl.Tensor[[16, 128], pl.FP16]` 的方向设为与 `pl.InOut` 相同的读写模式。直接使用 `@pl.jit` 时，参数保留原有只读方向。
+
 ## Mechanics
 
 ### 数据类型

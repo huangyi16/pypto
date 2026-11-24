@@ -111,6 +111,8 @@ host buffer's initial contents; unwritten elements are undefined. If a kernel
 updates only part of an output and must preserve the remaining host values,
 declare that parameter `InOut`, including on its enclosing entry and callees.
 
+The JIT decorator can mark named tensor parameters as read-write for a particular kernel variant. For example, `@pl.jit(inout_params=("bank",))` gives `bank: pl.Tensor[[16, 128], pl.FP16]` the same read-write direction as `pl.InOut`. The plain `@pl.jit` decoration retains the declared read-only direction.
+
 ## Mechanics
 
 ### Data types

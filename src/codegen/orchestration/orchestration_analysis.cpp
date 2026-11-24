@@ -208,6 +208,9 @@ void VarLineageCollector::Initialize(const std::vector<VarPtr>& params) {
 void VarLineageCollector::VisitStmt_(const ForStmtPtr& for_stmt) {
   for (size_t i = 0; i < for_stmt->iter_args_.size(); ++i) {
     const auto& iter_arg = for_stmt->iter_args_[i];
+    // A rebound tensor can name different storage after a yield; its initial
+    // parameter does not determine the value inside or after the loop.
+    if (AsTensorTypeLike(iter_arg->GetType()) && transform_utils::IterArgIsRebind(for_stmt, i)) continue;
     const Var* param = ResolveExpr(iter_arg->initValue_);
     if (param) {
       var_to_param[iter_arg.get()] = param;

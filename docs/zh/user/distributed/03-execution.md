@@ -42,6 +42,7 @@ with compiled.prepare() as rt:
 | `rt.copy_to(dst_dev_ptr, src_host_ptr, nbytes, *, dst_offset=0, src_offset=0, worker_id=0)` | 显式 staged H2D 拷贝。`dst_offset` 和 `src_offset` 用于子区间传输：从 `src_host_ptr + src_offset` 拷贝到 `dst_dev_ptr + dst_offset`。`dst_offset + nbytes` 必须落在 device 分配内。host `torch.Tensor` 源只需为 CPU 连续张量，可在 `prepare()` 后创建。 |
 | `rt.copy_from(dst_host_ptr, src_dev_ptr, nbytes, *, dst_offset=0, src_offset=0, worker_id=0)` | 显式 staged D2H 拷贝。`dst_offset` 和 `src_offset` 用于子区间传输：从 `src_dev_ptr + src_offset` 拷贝到 `dst_host_ptr + dst_offset`。`src_offset + nbytes` 必须落在 device 分配内。host `torch.Tensor` 目标只需为 CPU 连续张量，可在 `prepare()` 后创建。 |
 | `rt.alloc_stacked_tensor(host_w)` | 沿 dim 0 分片 `host_w`——分片 `i` 上传到卡 `i`。返回 `StackedDeviceTensor`。 |
+| `rt.mapped_host_tensor(name, shape, dtype, initialize)` | 在 A2/A3 或 A5 的 `tensormap_and_ringbuffer` 运行时为每个 rank 建立 Host 映射窗口。上下文返回 `StackedDeviceTensor`。 |
 | `rt.free_stacked_tensor(stacked)` | 释放 `StackedDeviceTensor` 的所有分片。 |
 | `rt.copy_stacked_from(stacked, host_out)` | staged D2H 读回 CPU 连续的 `host_out`；可在 `prepare()` 后分配。 |
 | `rt.committed_device_memory(worker_id=0)` | 本 worker 自己的分配器在卡 `worker_id` 上已提交的设备 HBM 字节数——张量、池化 arena、运行时 buffer。多卡总量需按 id 求和。 |
@@ -92,11 +93,14 @@ with compiled.prepare() as rt:
 
 ### 常驻张量的所有权
 
-常驻参数只能用于 prepared worker。`DeviceTensor` 必须由执行它的同一个
-`DistributedWorker.alloc_tensor` 返回，`StackedDeviceTensor` 必须由该 worker
-的 `alloc_stacked_tensor` 返回。这些分配接口会在每个设备张量或分片上保留 Simpler
+常驻参数归创建它的 prepared worker 所有。`alloc_tensor`、`alloc_stacked_tensor`
+和 `mapped_host_tensor` 都会在每个设备张量或分片上保留 Simpler
 owner `Buffer`，使无地址 wire ABI 能构造有效的 Tensor descriptor。手工包装裸指针，
 或把常驻张量交给另一个 worker，都会被拒绝。
+
+对映射的 Host 张量，`shape` 表示单个分片的形状。初始化时，
+`initialize(rank, view)` 通过借用的 CPU memoryview 写入该 rank 的数据。
+设备可以在多次提交中读取同一分片。退出上下文会释放映射，须先等待所有消费者完成。
 
 ## DeviceTensor
 

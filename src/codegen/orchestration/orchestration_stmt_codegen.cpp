@@ -50,8 +50,9 @@ OrchestrationStmtCodegen::OrchestrationStmtCodegen(
     const ProgramPtr& prog, KernelRegistrations* registrations, const std::vector<VarPtr>& params,
     std::unordered_map<const Var*, std::string> param_to_emit_name, std::set<std::string> param_name_set,
     std::map<std::string, int> param_name_to_orch_index,
-    std::unordered_map<std::string, std::string> dist_param_to_ctx_param)
+    std::unordered_map<std::string, std::string> dist_param_to_ctx_param, bool disable_early_resolve)
     : program_(prog),
+      disable_early_resolve_(disable_early_resolve),
       registrations_(registrations),
       emit_name_map_(std::move(param_to_emit_name)),
       param_name_set_(std::move(param_name_set)),

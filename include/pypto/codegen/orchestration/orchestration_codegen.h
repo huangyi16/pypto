@@ -58,10 +58,12 @@ struct OrchestrationResult {
  *
  * @param program The IR Program (used to resolve callee functions and validate references)
  * @param func The orchestration function to generate code for
+ * @param disable_early_resolve Require completion of producers even when a task requests early dispatch
  * @return OrchestrationResult containing generated code and function metadata
  * @throws ValueError if referenced functions are missing from the program
  */
-OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const ir::FunctionPtr& func);
+OrchestrationResult GenerateOrchestration(const ir::ProgramPtr& program, const ir::FunctionPtr& func,
+                                          bool disable_early_resolve = false);
 
 /**
  * @brief Infer the core type of a function from operand MemorySpace

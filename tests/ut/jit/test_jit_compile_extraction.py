@@ -1070,6 +1070,26 @@ def test_software_pipeline_conflict_is_rejected_before_cache_lookup(kernel, comp
     assert len(compile_calls) == 1
 
 
+def test_disable_early_resolve_changes_code_and_reuses_only_matching_artifacts():
+    @jit
+    def copy(x: pl.Tensor[[16, 32], pl.FP32], out: pl.Out[pl.Tensor[[16, 32], pl.FP32]]):
+        with pl.at(level=pl.Level.CORE_GROUP, allow_early_resolve=True):
+            pl.store(pl.load(x, [0, 0], [16, 32]), [0, 0], out)
+        return out
+
+    ordinary = copy.compile()
+    config = RunConfig(disable_early_resolve=True)
+    full_completion = copy.compile(config=config)
+    assert full_completion is not ordinary
+    assert copy.compile(config=config.compile_options()) is full_completion
+    assert copy.compile() is ordinary
+
+    for compiled, enabled in ((ordinary, True), (full_completion, False)):
+        source = next((Path(compiled.output_dir) / "orchestration").glob("*.cpp")).read_text()
+        assert ("set_allow_early_resolve(true)" in source) == enabled
+        assert "set_allow_early_resolve(false)" not in source
+
+
 def test_software_pipeline_cache_separates_effective_modes(kernel, compile_calls):
     ordinary = kernel.compile()
     enabled = kernel.compile(config=RunConfig(enable_software_pipeline=True))

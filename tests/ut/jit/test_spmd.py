@@ -25,7 +25,7 @@ import re
 
 import pypto.language as pl
 import pytest
-from pypto import backend, passes
+from pypto import backend, codegen, passes
 from pypto.backend import BackendType
 from pypto.ir import compile as compile_ir
 from pypto.jit.decorator import jit
@@ -39,6 +39,53 @@ _HIDDEN = 512
 _K_CHUNK = 128
 _HALF = _HIDDEN // 2  # columns of `hidden` handled by each SPMD block
 _CHUNKS = _HALF // _K_CHUNK  # pl.pipeline iterations per block
+
+
+@pytest.mark.parametrize("has_producer", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_inline_optional_task_dependency(has_producer, nested):
+    """None must survive inline calls without becoming a task or a stale dep."""
+
+    @jit.inline(auto_scope=False)
+    def consume(x: pl.Tensor, out: pl.Tensor, ready: pl.Scalar[pl.TASK_ID]):
+        with pl.spmd(1, name_hint="optional_consumer", deps=[ready]):
+            block = pl.tile.get_block_idx()
+            out = pl.store(pl.load(x, [block * 16, 0], [16, 128]), [block * 16, 0], out)
+        return out
+
+    @jit.inline(auto_scope=False)
+    def relay(x: pl.Tensor, out: pl.Tensor, ready: pl.Scalar[pl.TASK_ID]):
+        return consume(x, out, ready)
+
+    reader = relay if nested else consume
+
+    @jit(auto_scope=False)
+    def entry(
+        x: pl.Tensor[[16, 128], pl.FP32], out: pl.Out[pl.Tensor[[16, 128], pl.FP32]], produced: pl.constexpr
+    ):
+        if produced:
+            with pl.at(level=pl.Level.CORE_GROUP, name_hint="weight_producer") as ready:
+                out = pl.store(pl.load(x, [0, 0], [16, 128]), [0, 0], out)
+            result = reader(x, out, ready)
+        else:
+            result = reader(x, out, None)
+        return result
+
+    program = entry.lower(produced=has_producer)
+    orch = program.get_function("entry")
+    assert orch is not None
+    source = codegen.generate_orchestration(program, orch).code
+    assert source.count("rt_submit_aiv_task(") == 1 + has_producer
+    assert "rt_submit_dummy_task(" not in source
+    if has_producer:
+        assert "weight_producer" in source
+        producer = re.search(r"TaskId (\w+) = task_0_outs\.task_id\(\);", source)
+        assert producer is not None
+        assert f"_deps[params_t1_deps_count++] = {producer.group(1)};" in source
+    else:
+        invalid = re.search(r"TaskId (\w+) = TaskId::invalid\(\);", source)
+        assert invalid is not None
+        assert f"if ({invalid.group(1)}.is_valid())" in source
 
 
 def test_spmd_scatter_different_output_shapes(tmp_path):

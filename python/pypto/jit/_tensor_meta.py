@@ -33,7 +33,7 @@ from . import _arguments, _ast_analysis, _call_binding
 from ._call_syntax import dependency_call
 from ._call_syntax import writeback_return_operand as _writeback_return_operand
 from ._scalar_meta import ScalarTypes
-from ._specialize_body import BodyTransformer
+from ._specialize_body import BodyTransformer, _constant_condition
 from .specializer import (
     DynDim,
     ShapeDim,
@@ -139,7 +139,7 @@ def scan_dep_io(
     for call_name, dep in discover_deps(func, caller_func_type):
         try:
             func_def = _ast_analysis.get_func_def(dep._func)
-            out_params, inout_params, _, _, _ = _classify_params(func_def)
+            out_params, inout_params, _, _, _ = _classify_params(func_def, dep._inout_params)
         except OSError:
             continue
         param_names = dep._param_names()
@@ -217,6 +217,7 @@ class _DepScan:
     owner: str
     # Keep runtime JIT recognition at the decorator boundary, also for callee returns.
     discover_deps: _call_binding.DiscoverDeps
+    selected_expressions: Mapping[tuple[int, int], bool]
     resolve_expr: Callable[[ast.expr], TensorMeta | None] | None = None
 
 
@@ -353,7 +354,7 @@ def _dep_out_metas(
     dep = deps.funcs.get(dep_name)
     if dep is not None and dep._func_type == "extern" and len(names) == 1:
         definition = _ast_analysis.get_func_def(dep._func)
-        outputs, inouts, _, _, _ = _classify_params(definition)
+        outputs, inouts, _, _, _ = _classify_params(definition, dep._inout_params)
         if outputs:
             # A signature-only single-result extern exposes its first Out.
             out_params = outputs[:1]
@@ -1059,6 +1060,11 @@ def _tensor_expr_meta(
     resolve_dim: "Callable[[ast.expr], _DimValue]",
 ) -> TensorMeta | None:
     """Resolve one tensor expression in a return or a tuple construction."""
+    while isinstance(expr, ast.IfExp):
+        condition = deps.selected_expressions.get((expr.lineno, expr.col_offset))
+        if condition is None:
+            return None
+        expr = expr.body if condition else expr.orelse
     if isinstance(expr, ast.Name):
         return local.get(expr.id)
     if isinstance(expr, ast.Subscript):
@@ -1344,7 +1350,7 @@ def _submitted_value_metas(
 
     # Signature-only externs use their public writable aliases, including
     # trailing Out storage that the parser will allocate for this launch.
-    outputs, inouts, _, _, _ = _classify_params(definition)
+    outputs, inouts, _, _, _ = _classify_params(definition, dep._inout_params)
     legacy_single = bool(outputs) or bool(
         _legacy_inout_return_params(definition, inouts, func_name_lookup(dep._func))
     )
@@ -1935,6 +1941,7 @@ class _StaticPreview(NamedTuple):
     unary_plus: dict[tuple[int, int], int]
     constants: dict[tuple[int, int], int]
     selected_arms: dict[tuple[int, int], bool]
+    selected_expressions: dict[tuple[int, int], bool]
     return_position: tuple[int, int] | None
 
 
@@ -1954,12 +1961,15 @@ def _preview_static_expressions(
     initializer is known. Source positions associate the copy with the input AST.
     Memoizing the pure constant fold keeps nested unary expressions linear.
     """
-    interesting = (ast.UAdd, ast.Subscript, ast.If) if summarize_return else (ast.UAdd, ast.Subscript)
+    interesting = (ast.UAdd, ast.Subscript, ast.IfExp)
+    if summarize_return:
+        interesting += (ast.If,)
     if not any(isinstance(node, interesting) for node in ast.walk(func_def)):
-        return _StaticPreview({}, {}, {}, None)
+        return _StaticPreview({}, {}, {}, {}, None)
     values: dict[tuple[int, int], int] = {}
     constants: dict[tuple[int, int], int] = {}
     selected_arms: dict[tuple[int, int], bool] = {}
+    selected_expressions: dict[tuple[int, int], bool] = {}
 
     @functools.cache
     def static_int(node: ast.expr) -> int | None:
@@ -1979,6 +1989,12 @@ def _preview_static_expressions(
         return None
 
     class Preview(BodyTransformer):
+        def visit_IfExp(self, node: ast.IfExp) -> ast.expr:
+            result = super().visit_IfExp(node)
+            if (condition := _constant_condition(node.test)) is not None:
+                selected_expressions[node.lineno, node.col_offset] = condition
+            return result
+
         def _visit_literal_if(self, node: ast.If, condition: bool) -> list[ast.stmt]:
             if summarize_return and hasattr(node, "lineno") and hasattr(node, "col_offset"):
                 selected_arms[node.lineno, node.col_offset] = condition
@@ -2043,9 +2059,15 @@ def _preview_static_expressions(
                 )
     except (IndexError, KeyError, TypeError, ValueError):
         # Invalid source still belongs to the normal specializer/parser path.
-        return _StaticPreview({}, {}, {}, None)
+        return _StaticPreview({}, {}, {}, {}, None)
     site = _return_site(ast.Module(body=emitted, type_ignores=[])) if selected_arms else None
-    return _StaticPreview(values, constants, selected_arms, (site.lineno, site.col_offset) if site else None)
+    return _StaticPreview(
+        values,
+        constants,
+        selected_arms,
+        selected_expressions,
+        (site.lineno, site.col_offset) if site else None,
+    )
 
 
 def _matching_static_unary_plus(value: int | None, operand: _DimValue) -> int | None:
@@ -2637,6 +2659,7 @@ def extract_local_tensor_metas(
         else _DepAnalysis(frozenset({id(func)}), _DepSummaries({})),
         constexpr=dict(constexpr_values or {}),
         scope=scope,
+        selected_expressions=static_preview.selected_expressions,
         owner=func_def.name,
         discover_deps=discover_deps,
     )

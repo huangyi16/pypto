@@ -336,6 +336,7 @@ def compile(  # noqa: PLR0913
     memory_planner: _passes.MemoryPlanner | None = None,
     enable_pypto_l0c_double_buffer: bool | None = None,
     enable_software_pipeline: bool | None = None,
+    disable_early_resolve: bool = False,
     profiling: bool = False,
     platform: str | None = None,
     execution_mode: ExecutionMode | None = None,
@@ -411,6 +412,8 @@ def compile(  # noqa: PLR0913
             ``False``). Automatic dbC is disabled for PYPTO and DSA_RP;
             PTOAS retains its existing selection independently of this flag.
             Explicit buffering is preserved.
+        disable_early_resolve: Require producer completion before dispatching consumers,
+            even for tasks explicitly marked with ``allow_early_resolve=True``.
         enable_software_pipeline: Lower eligible pipeline loops with explicit
             prefetch and rotating slots instead of unrolling. ``None`` inherits
             the active ``PassContext`` setting, or defaults to ``False``. Requires
@@ -482,6 +485,7 @@ def compile(  # noqa: PLR0913
         memory_planner=memory_planner,
         enable_pypto_l0c_double_buffer=enable_pypto_l0c_double_buffer,
         enable_software_pipeline=enable_software_pipeline,
+        disable_early_resolve=disable_early_resolve,
         profiling=profiling,
         platform=platform,
         execution_mode=execution_mode,
@@ -598,6 +602,7 @@ def _compile_to_files(  # noqa: PLR0913
     memory_planner: _passes.MemoryPlanner | None = None,
     enable_pypto_l0c_double_buffer: bool | None = None,
     enable_software_pipeline: bool | None = None,
+    disable_early_resolve: bool = False,
     profiling: bool = False,
     platform: str | None = None,
     execution_mode: ExecutionMode | None = None,
@@ -696,6 +701,7 @@ def _compile_to_files(  # noqa: PLR0913
                     emit_source_loc=emit_source_loc,
                     dump_ptoas_passes=dump_ptoas_passes,
                     runtime=effective_runtime,
+                    disable_early_resolve=disable_early_resolve,
                 )
         except PartialCodegenError as exc:
             _write_files(exc.files, output_dir)

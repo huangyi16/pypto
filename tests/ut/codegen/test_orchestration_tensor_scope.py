@@ -14,12 +14,49 @@ import re
 import pypto.language as pl
 import pytest
 from _orchestration_codegen_common import (
+    _assert_orchestration_compiles,
     _generate_orch_code,
     _generate_orch_full_pipeline,
     _out_of_scope_tensor_refs,
 )
 from pypto import backend, passes
 from pypto.backend import BackendType
+
+
+def test_rebound_tensor_param_flows_between_loops(tmp_path):
+    @pl.program
+    class Program:
+        @pl.function(type=pl.FunctionType.AIV)
+        def copy(self, x: pl.Tensor[[16], pl.FP32], out: pl.Out[pl.Tensor[[16], pl.FP32]]):
+            return pl.tile.store(pl.tile.load(x, [0], [16]), [0], out)
+
+        @pl.function(type=pl.FunctionType.Orchestration, auto_scope=False)
+        def main(
+            self,
+            seed: pl.InOut[pl.Tensor[[16], pl.FP32]],
+            out: pl.Tensor[[16], pl.FP32],
+            n: pl.Scalar[pl.INDEX],
+        ):
+            for i, (a,) in pl.range(n, init_values=(seed,)):
+                buf = pl.create_tensor([16], dtype=pl.FP32)
+                a_next = self.copy(a, buf)
+                first = pl.yield_(a_next)
+            mid = first
+            for j, (b,) in pl.range(n, init_values=(mid,)):
+                buf = pl.create_tensor([16], dtype=pl.FP32)
+                b_next = self.copy(b, buf)
+                second = pl.yield_(b_next)
+            final = second
+            return self.copy(final, out)
+
+    code = _generate_orch_full_pipeline(Program)
+    source = tmp_path / "main.cpp"
+    source.write_text(code)
+    _assert_orchestration_compiles(source, runtime_name="tensormap_and_ringbuffer", arch="a5")
+    assert "Tensor mid = first;" in code
+    assert "Tensor second = mid;" in code
+    assert "Tensor final = second;" in code
+    assert ".add_input(final);" in code
 
 
 def test_nested_scope_tensor_carry_snapshot_survives_scope_exit():

@@ -421,6 +421,76 @@ class TestDistributedEnumConstants:
         assert kernel.compile(config=config) is compiled_by_op[pld.ReduceOp.Sum]
 
 
+def _literal_bank(bank: pl.Tensor[[4, 32], pl.INT32]):
+    return bank
+
+
+def test_inout_params_is_specific_to_each_wrapper():
+    resident = pl.jit(_literal_bank)
+    mapped = pl.jit(inout_params=("bank",))(_literal_bank)
+    for kernel, direction in ((mapped, ir.ParamDirection.InOut), (resident, ir.ParamDirection.In)):
+        assert kernel.specialize().get_function("_literal_bank").param_directions == [direction]
+        assert kernel.output_param_names == (("bank",) if kernel is mapped else ())
+        compiled = kernel.compile()
+        assert compiled.program is not None
+        assert compiled.program.get_function("_literal_bank").param_directions == [direction]
+    assert resident._get_source_hash() != mapped._get_source_hash()
+    assert resident._persistent_source_digest() != mapped._persistent_source_digest()
+
+
+def test_inout_params_reach_host_and_chip_dispatch():
+    @pl.jit(inout_params=("bank",))
+    def chip(bank: pl.Tensor[[4, 32], pl.INT32]):
+        return bank
+
+    @pl.jit.host(inout_params=("bank",))
+    def host(bank: pl.Tensor[[4, 32], pl.INT32]):
+        return chip(bank, device=0)
+
+    graph = host.specialize()
+    assert graph.get_function("host").param_directions == [ir.ParamDirection.InOut]
+    assert graph.get_function("chip").param_directions == [ir.ParamDirection.InOut]
+
+
+@pytest.mark.parametrize("names,error", [("bank", TypeError), (("other",), ValueError)])
+def test_inout_params_require_declared_tensor_names(names, error):
+    with pytest.raises(error, match="inout_params"):
+        pl.jit(inout_params=names)(_literal_bank)
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_eager_tensor_parameter_alias_keeps_its_direction(enabled, monkeypatch):
+    monkeypatch.setitem(globals(), "state_type", pl.constexpr)
+    state_type = pl.Tensor[[1], pl.INT32] if enabled else pl.constexpr
+
+    @pl.jit.inline(auto_scope=False)
+    def add_state(
+        x: pl.Tensor[[1], pl.INT32],
+        out: pl.Tensor[[1], pl.INT32],
+        state: state_type,  # pyright: ignore[reportInvalidTypeForm]
+    ):
+        with pl.at(level=pl.Level.CORE_GROUP):
+            if enabled:
+                pl.write(out, [0], pl.read(x, [0]) + pl.read(state, [0]))
+            else:
+                pl.write(out, [0], pl.read(x, [0]))
+
+    @pl.jit(auto_scope=False)
+    def entry(
+        x: pl.Tensor[[1], pl.INT32],
+        out: pl.Out[pl.Tensor[[1], pl.INT32]],
+        state: pl.InOut[state_type] = 0,  # pyright: ignore[reportInvalidTypeForm]
+    ):
+        add_state(x, out, state if enabled else 0)
+        return out
+
+    func = entry.lower().get_function("entry")
+    expected = [ir.ParamDirection.In, ir.ParamDirection.Out]
+    if enabled:
+        expected.append(ir.ParamDirection.InOut)
+    assert func.param_directions == expected
+
+
 class TestSpecialize:
     """``specialize()`` returns a usable pre-pass program."""
 

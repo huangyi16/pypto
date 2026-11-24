@@ -181,6 +181,8 @@ compiled(A[:TILE_ROWS], B[:TILE_ROWS], scratch, out, config=CFG)
 torch.testing.assert_close(out, torch.exp(A[:TILE_ROWS] + B[:TILE_ROWS]), rtol=1e-3, atol=1e-4)
 ```
 
+如需在某次编译中让所有任务都等待生产者完成（包括各芯片的子编排），可使用 `CompileOptions(disable_early_resolve=True)`。该选项覆盖显式提前调度提示，并使用独立的 JIT 缓存条目。
+
 调度器于是可以在这个任务**完成之前**就把它的消费者预置到空闲核上，等它一结束就用门铃放行。
 
 `pl.at`、`pl.submit`、`pl.spmd`、`pl.spmd_submit` 上都有，而且它是纯调度提示 —— 不影响结果。

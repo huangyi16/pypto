@@ -477,6 +477,7 @@ class JITFunction:
         self._func_type = func_type or "orchestration"
         self._level = level
         self._auto_scope = auto_scope
+        self._inout_params: tuple[str, ...] = ()
         # External C++ kernel backing (func_type == "extern"): resolved absolute
         # paths the specializer emits as @pl.function(external_source=...).
         self._external_core_type = external_core_type
@@ -494,6 +495,20 @@ class JITFunction:
         self.__name__ = func.__name__
         self.__doc__ = func.__doc__
         self.__module__ = func.__module__
+
+    @classmethod
+    def _from_signature(
+        cls, func: Any, *, func_type: str, level: Any, auto_scope: bool, inout_params: Sequence[str]
+    ) -> "JITFunction":
+        wrapped = cls(func, func_type=func_type, level=level, auto_scope=auto_scope)
+        if isinstance(inout_params, str):
+            raise TypeError("inout_params must be a sequence of tensor parameter names")
+        if inout_params:
+            outputs, _, tensors, _, _ = _classify_params(_ast_analysis.get_func_def(func))
+            if any(name not in tensors or name in outputs for name in inout_params):
+                raise ValueError("inout_params must name Tensor or InOut tensor parameters")
+            wrapped._inout_params = tuple(name for name in tensors if name in inout_params)
+        return wrapped
 
     @property
     def _diagnostic_filename(self) -> str:
@@ -822,6 +837,8 @@ class JITFunction:
                     separators=(",", ":"),
                 )
             )
+            if jit_func._inout_params:
+                sources.append(json.dumps(("<inout-params>", jit_func._inout_params)))
             if jit_func._func_type == "extern":
                 # External sources and quoted includes can change between
                 # requests. Recompute their digest even when the graph is reused.
@@ -1256,6 +1273,7 @@ class JITFunction:
             emit_source_loc=compile_kwargs["emit_source_loc"],
             memory_planner=compile_kwargs.get("memory_planner", _resolve_memory_planner(None)),
             enable_pypto_l0c_double_buffer=_resolve_enable_pypto_l0c_double_buffer(),
+            disable_early_resolve=compile_kwargs.get("disable_early_resolve", False),
             enable_buffer_ir=_resolve_enable_buffer_ir(compile_kwargs.get("enable_software_pipeline")),
             enable_software_pipeline=_resolve_enable_software_pipeline(
                 compile_kwargs.get("enable_software_pipeline")
@@ -1324,6 +1342,8 @@ class JITFunction:
             state.persistent_source_hash = digest_record(records)
         values: list[tuple[Any, ...]] = []
         for index, fn in enumerate(functions):
+            if fn._inout_params:
+                values.append((index, "<inout-params>", fn._inout_params))
             namespace = func_name_lookup(fn._func)
             for name in _ast_analysis.constant_dependency_names(fn._func):
                 folded = free_name_source(name, namespace)
@@ -1574,7 +1594,9 @@ class JITFunction:
         return order. A caller that materialises tensors for this kernel uses
         it to decide which of them are results to validate.
         """
-        out_params, inout_params, _, _, _ = _classify_params(_ast_analysis.get_func_def(self._func))
+        out_params, inout_params, _, _, _ = _classify_params(
+            _ast_analysis.get_func_def(self._func), self._inout_params
+        )
         written = set(out_params) | set(inout_params)
         return tuple(p for p in self._param_names() if p in written)
 
@@ -1860,6 +1882,7 @@ class JITFunction:
                         peer_func_names=peer_names_by_variant.get(key, {}),
                         peer_func_scope_ambiguous=key in ambiguous_peer_scopes,
                         auto_scope=self._auto_scope,
+                        inout_params=self._inout_params,
                     )
                 )
                 continue
@@ -1909,6 +1932,7 @@ class JITFunction:
                     peer_func_names=peer_names_by_variant.get(key, {}),
                     peer_func_scope_ambiguous=key in ambiguous_peer_scopes,
                     auto_scope=dep._auto_scope,
+                    inout_params=dep._inout_params,
                     external_core_type=dep._external_core_type,
                     external_aic_source=dep._external_aic_source,
                     external_aiv_source=dep._external_aiv_source,
@@ -2255,7 +2279,14 @@ class _SubFunctionDecorator:
         self._allow_level = allow_level
         self._allow_auto_scope = allow_auto_scope
 
-    def __call__(self, func: Any = None, *, level: Any = None, auto_scope: Any = _AUTO_SCOPE_UNSET) -> Any:
+    def __call__(
+        self,
+        func: Any = None,
+        *,
+        level: Any = None,
+        auto_scope: Any = _AUTO_SCOPE_UNSET,
+        inout_params: Sequence[str] = (),
+    ) -> Any:
         if level is not None and not self._allow_level:
             raise TypeError(f"@pl.jit.{self._func_type} does not accept a level= argument")
         if auto_scope is not _AUTO_SCOPE_UNSET and not self._allow_auto_scope:
@@ -2268,10 +2299,22 @@ class _SubFunctionDecorator:
         if func is None:
 
             def _deferred(f: Callable[..., Any]) -> JITFunction:
-                return JITFunction(f, func_type=self._func_type, level=level, auto_scope=resolved_auto_scope)
+                return JITFunction._from_signature(
+                    f,
+                    func_type=self._func_type,
+                    level=level,
+                    auto_scope=resolved_auto_scope,
+                    inout_params=inout_params,
+                )
 
             return _deferred
-        return JITFunction(func, func_type=self._func_type, level=level, auto_scope=resolved_auto_scope)
+        return JITFunction._from_signature(
+            func,
+            func_type=self._func_type,
+            level=level,
+            auto_scope=resolved_auto_scope,
+            inout_params=inout_params,
+        )
 
 
 def _resolve_extern_source(source: str | Any, func: Any) -> str:
@@ -2432,21 +2475,26 @@ class _JITDecorator:
         self.graph = _SubFunctionDecorator("graph", allow_level=False)
         self.extern = _ExternKernelDecorator()
 
-    def __call__(self, func: Any = None, *, auto_scope: bool = True) -> Any:
+    def __call__(self, func: Any = None, *, auto_scope: bool = True, inout_params: Sequence[str] = ()) -> Any:
         """Decorate an entry-point JIT function (Orchestration).
 
         Supports both the bare ``@pl.jit`` form and the parenthesized
         ``@pl.jit(auto_scope=False)`` form. Setting ``auto_scope=False`` opts
         out of compiler-inserted AUTO runtime scopes so the body can place
-        them by hand with ``with pl.scope()``.
+        them by hand with ``with pl.scope()``. Set ``inout_params`` to the names
+        of tensor inputs read and written by this variant.
         """
         if func is None:
 
             def _deferred(f: Callable[..., Any]) -> JITFunction:
-                return JITFunction(f, func_type="orchestration", level=None, auto_scope=auto_scope)
+                return JITFunction._from_signature(
+                    f, func_type="orchestration", level=None, auto_scope=auto_scope, inout_params=inout_params
+                )
 
             return _deferred
-        return JITFunction(func, func_type="orchestration", level=None, auto_scope=auto_scope)
+        return JITFunction._from_signature(
+            func, func_type="orchestration", level=None, auto_scope=auto_scope, inout_params=inout_params
+        )
 
 
 # Singleton decorator object exposed as ``pl.jit``

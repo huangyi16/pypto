@@ -729,7 +729,8 @@ void OrchestrationStmtCodegen::EmitLaunchSpec(const std::string& task_var, const
 void OrchestrationStmtCodegen::EmitEarlyResolveHint(const std::string& task_var, const CallPtr& call) {
   // Native completion requirements take precedence over speculative hints on
   // every producer in the program, including ordinary PyPTO kernels.
-  if (!require_task_completion_ && call->GetAttr<bool>("allow_early_resolve", false)) {
+  if (!disable_early_resolve_ && !require_task_completion_ &&
+      call->GetAttr<bool>("allow_early_resolve", false)) {
     EmitIndentedLine(task_var + ".set_allow_early_resolve(true);");
   }
 }

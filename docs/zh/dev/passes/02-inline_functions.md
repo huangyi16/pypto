@@ -47,6 +47,10 @@ program_inlined = inline_pass(program)
      - 按调用点形态接线被内联函数的尾部返回值:`LHS = renamed_return`(单返回值赋值;当 `LHS` 与替换后的返回 `Var` 是同一个 `Var` 时省略该赋值,以避免冗余 SSA 拷贝)、逐元素替换 `TupleGetItemExpr` 而不发出 `MakeTuple` 绑定(多返回值赋值)、新的 `ReturnStmt`(`return inline_call(...)`),或者当返回值被丢弃但其求值可观测时发出新的 `EvalStmt`(`EvalStmt` 调用点 — 参见[边界情况](#边界情况))。
 4. **删除**所有 Inline 函数。
 
+非变量形式的 `TaskId` 实参，包括表示无生产者的 `None`，也会在替换前绑定到新的局部变量。
+依赖字段和作用域属性保存变量引用，直接替换为 `system.task_invalid()` 表达式会留下失效的形参引用。
+该绑定不会创建任务；代码生成构造依赖列表时会跳过无效 token。
+
 元组元素替换也遵循单返回值的恒等回写（identity writeback）规则：如果
 `q, ready = helper(x, q)` 产生 `q = q`，就在 SSA 转换前省略该赋值。
 这要求左右两边是同一个 `Var` 对象，而不只是名称、形状或底层缓冲区相同。

@@ -317,6 +317,7 @@ def build_contexts(
                 peer_func_names=peer_names.get(variant_keys[variant_id], {}),
                 peer_func_scope_ambiguous=variant_keys[variant_id] in ambiguous_peer_scopes,
                 auto_scope=function._auto_scope,
+                inout_params=function._inout_params,
                 external_core_type=function._external_core_type,
                 external_aic_source=function._external_aic_source,
                 external_aiv_source=function._external_aiv_source,
