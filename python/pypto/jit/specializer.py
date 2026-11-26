@@ -2277,8 +2277,12 @@ class Specializer:
         """
         return dict(self._source_map)
 
-    def specialize(self) -> str:
+    def specialize(self, *, prune_unreachable: bool = False) -> str:
         """Generate @pl.program source code string.
+
+        Args:
+            prune_unreachable: Emit only dependencies reached from the entry after
+                constexpr folding. Standalone context collections keep every function.
 
         Returns:
             Python source string ready to pass to ``pl.parse()``.
@@ -2287,6 +2291,9 @@ class Specializer:
         self._graph_rebinds = {}
         self._needs_pld_import = False
         self._external_calls = {}
+
+        if prune_unreachable:
+            self._contexts = self._reachable_contexts()
 
         # Specialize bodies first so per-context state (DynVars,
         # _needs_pld_import) is fully populated before assembling the preamble.
@@ -2415,6 +2422,32 @@ class Specializer:
         if ret_type is None and ctx.requires_return_contract and ctx.return_metas:
             self._submit_return_arities[ctx.func_name] = len(ctx.return_metas)
         return ret_type
+
+    def _reachable_contexts(self) -> list[SpecializeContext]:
+        """Keep dependencies referenced by the constexpr-specialized entry."""
+        # A dead callee may have no tensor metadata, or metadata belonging to
+        # the other branch's inactive argument. Discover live references before
+        # parsing its signature. Use a separate specializer so probing does not
+        # publish extern normalization, source maps, or graph captures.
+        probe = Specializer(self._class_name, self._contexts)
+        pending = [self._contexts[-1]]
+        reached: set[str] = set()
+        while pending:
+            ctx = pending.pop()
+            if ctx.func_name in reached:
+                continue
+            reached.add(ctx.func_name)
+            tree = ast.parse("\n".join(probe._specialize_function(ctx)))
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and node.attr in probe._callee_contexts
+                ):
+                    pending.append(probe._callee_contexts[node.attr])
+        # Actual emission retains dependency order for extern call contracts.
+        return [ctx for ctx in self._contexts if ctx.func_name in reached]
 
     def _specialize_function(self, ctx: SpecializeContext) -> list[str]:
         """Generate lines for a single @pl.function method."""

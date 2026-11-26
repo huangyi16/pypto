@@ -1758,6 +1758,16 @@ def _walk_local_tensor_meta_stmts(
             selected := selected_arms.get((getattr(stmt, "lineno", -1), getattr(stmt, "col_offset", -1)))
         ) is not None:
             body = stmt.body if selected else stmt.orelse
+            # Legacy self.kernel submissions can use a dead direct call to
+            # seed metadata. An explicit query for that site still needs its
+            # local bindings; queries after the branch use only the live arm.
+            inactive = stmt.orelse if selected else stmt.body
+            if any(
+                isinstance(node, ast.stmt) and _stmt_calls_dep(node, stop_at_dep, stop_at_call)
+                for child in inactive
+                for node in ast.walk(child)
+            ):
+                return walk(inactive)
             selected_yields.update(BodyTransformer.selected_yield_assignments(body))
             return walk(body)
         dim_mark, tensor_mark, tuple_mark = len(dim_undo), len(tensor_undo), len(tuple_undo)
@@ -1954,7 +1964,7 @@ def _preview_static_expressions(
     initializer is known. Source positions associate the copy with the input AST.
     Memoizing the pure constant fold keeps nested unary expressions linear.
     """
-    interesting = (ast.UAdd, ast.Subscript, ast.If) if summarize_return else (ast.UAdd, ast.Subscript)
+    interesting = (ast.UAdd, ast.Subscript, ast.If)
     if not any(isinstance(node, interesting) for node in ast.walk(func_def)):
         return _StaticPreview({}, {}, {}, None)
     values: dict[tuple[int, int], int] = {}
@@ -1980,7 +1990,7 @@ def _preview_static_expressions(
 
     class Preview(BodyTransformer):
         def _visit_literal_if(self, node: ast.If, condition: bool) -> list[ast.stmt]:
-            if summarize_return and hasattr(node, "lineno") and hasattr(node, "col_offset"):
+            if hasattr(node, "lineno") and hasattr(node, "col_offset"):
                 selected_arms[node.lineno, node.col_offset] = condition
             return super()._visit_literal_if(node, condition)
 
@@ -2044,7 +2054,11 @@ def _preview_static_expressions(
     except (IndexError, KeyError, TypeError, ValueError):
         # Invalid source still belongs to the normal specializer/parser path.
         return _StaticPreview({}, {}, {}, None)
-    site = _return_site(ast.Module(body=emitted, type_ignores=[])) if selected_arms else None
+    site = (
+        _return_site(ast.Module(body=emitted, type_ignores=[]))
+        if summarize_return and selected_arms
+        else None
+    )
     return _StaticPreview(values, constants, selected_arms, (site.lineno, site.col_offset) if site else None)
 
 

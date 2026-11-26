@@ -1677,7 +1677,7 @@ class JITFunction:
                 if ctx.external_binding is not None:
                     ctx.external_binding.prepare(ctx, platform, runtime, ir_compile_kwargs["output_dir"])
         specializer = Specializer(class_name, contexts)
-        source = specializer.specialize()
+        source = specializer.specialize(prune_unreachable=True)
         rename_map = specializer.rename_map
         try:
             parsed = pl.parse(source, filename=self._diagnostic_filename, source_map=specializer.source_map)
@@ -1731,7 +1731,7 @@ class JITFunction:
             raise ValueError("Provider bindings require compile() with an explicit target platform")
         class_name = f"_jit_{self.__name__}"
         specializer = Specializer(class_name, contexts)
-        source = specializer.specialize()
+        source = specializer.specialize(prune_unreachable=True)
         rename_map = specializer.rename_map
         try:
             program = pl.parse(source, filename=self._diagnostic_filename, source_map=specializer.source_map)

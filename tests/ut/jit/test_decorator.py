@@ -8479,5 +8479,72 @@ def test_constexpr_branch_preserves_multiple_yield_results(mode):
         ir.assert_structural_equal(value.type, ir.TensorType([8, width], DataType.FP32))
 
 
+def test_constexpr_branch_skips_inactive_callee_metadata():
+    import torch  # noqa: PLC0415
+
+    @jit.inline
+    def read_matrix(buffer: pl.Tensor):
+        return pl.tensor.read(buffer, [0, 0])
+
+    @jit.inline
+    def read_vector(buffer: pl.Tensor):
+        return pl.tensor.read(buffer, [0])
+
+    @jit
+    def entry(buffer: pl.Tensor, matrix: pl.constexpr):
+        if matrix:
+            return read_matrix(buffer)
+        else:
+            return read_vector(buffer)
+
+    # The inactive helper cannot consume the selected branch's tensor rank.
+    # Reusing one JIT object also checks that pruning is per specialization.
+    for matrix in (False, True, False, True):
+        buffer = torch.zeros((2, 8) if matrix else (16,), dtype=torch.int32)
+        program = entry.specialize(buffer, matrix)
+        assert program.get_function("read_matrix" if matrix else "read_vector") is not None
+        assert program.get_function("read_vector" if matrix else "read_matrix") is None
+
+
+@pytest.mark.parametrize("matrix", [False, True])
+def test_constexpr_local_tensor_metadata_survives_selected_branch(matrix):
+    @jit.inline
+    def consume(buffer: pl.Tensor):
+        return buffer
+
+    @jit
+    def entry(matrix: pl.constexpr):
+        if matrix:
+            scratch = pl.create_tensor([2, 8], dtype=pl.FP32)
+        else:
+            scratch = pl.create_tensor([16], dtype=pl.INT32)
+        return consume(scratch)
+
+    program = entry.specialize(matrix)
+    callee = program.get_function("consume")
+    assert callee is not None
+    expected = ir.TensorType([2, 8], DataType.FP32) if matrix else ir.TensorType([16], DataType.INT32)
+    ir.assert_structural_equal(callee.params[0].type, expected)
+
+
+def test_constexpr_branch_skips_callee_with_no_inferred_tensor():
+    @jit.inline
+    def consume(buffer: pl.Tensor):
+        return buffer
+
+    @jit
+    def entry(output: pl.Tensor[[2, 8], pl.FP32], enabled: pl.constexpr):
+        if enabled:
+            scratch = pl.create_tensor([2, 8], dtype=pl.FP32)
+        if enabled:
+            return consume(scratch)
+        else:
+            return output
+
+    for enabled in (False, True, False, True):
+        program = entry.specialize(enabled=enabled)
+        assert (program.get_function("consume") is not None) == enabled
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
