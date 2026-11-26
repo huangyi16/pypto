@@ -14,12 +14,42 @@ import re
 import pypto.language as pl
 import pytest
 from _orchestration_codegen_common import (
+    _assert_orchestration_compiles,
     _generate_orch_code,
     _generate_orch_full_pipeline,
     _out_of_scope_tensor_refs,
 )
 from pypto import backend, passes
 from pypto.backend import BackendType
+
+
+def test_sequential_loop_parameter_aliases_have_distinct_names(tmp_path):
+    """Two conditional loop carries must not redeclare their shared parameter root."""
+
+    @pl.program
+    class Program:
+        @pl.function(type=pl.FunctionType.InCore)
+        def update(self, x: pl.InOut[pl.Tensor[[16], pl.FP32]]) -> pl.Tensor[[16], pl.FP32]:
+            return pl.store(pl.add(pl.load(x, [0], [16]), 1.0), [0], x)
+
+        @pl.function(type=pl.FunctionType.Orchestration, auto_scope=False)
+        def main(self, x: pl.InOut[pl.Tensor[[16], pl.FP32]], enabled: pl.Scalar[pl.INT32]):
+            for i in pl.range(2):
+                if enabled > 0:
+                    x = self.update(x)
+            first = x
+            for j in pl.range(2):
+                if enabled > 0:
+                    first = self.update(first)
+            final = first
+            return self.update(final)
+
+    code = _generate_orch_full_pipeline(Program)
+    assert code.count("rt_submit_aiv_task(") == 3
+    assert not _out_of_scope_tensor_refs(code), code
+    source = tmp_path / "main.cpp"
+    source.write_text(code)
+    _assert_orchestration_compiles(source)
 
 
 def test_nested_scope_tensor_carry_snapshot_survives_scope_exit():

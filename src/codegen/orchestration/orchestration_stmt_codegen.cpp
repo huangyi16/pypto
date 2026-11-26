@@ -473,6 +473,13 @@ void OrchestrationStmtCodegen::VisitStmt_(const AssignStmtPtr& assign) {
         return;
       }
     }
+    // Lineage seeds body aliases with their parameter's name. A loop result
+    // may now resolve to a carry instead, so this snapshot needs its own name;
+    // otherwise successive loops both declare the same parameter alias.
+    if (cpp_type == "Tensor" && param_name_set_.count(var_name)) {
+      emit_name_map_.erase(assign->var_.get());
+      var_name = ReserveVarEmitName(assign->var_.get());
+    }
     EmitIndentedLine(cpp_type + " " + var_name + " = " + value_expr + ";");
 
     if (cpp_type == "Tensor" && AsVarLike(assign->value_)) RecordTensorSource(var_name, value_expr);
